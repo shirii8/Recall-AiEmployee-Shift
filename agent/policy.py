@@ -14,6 +14,8 @@ ALLOWED. It works like Row Level Security in Postgres: default deny.
 The actual business rules live with their tools in agent/packs/. This file is
 only the engine, so it works for any job.
 """
+import threading
+
 from agent.tools import IRREVERSIBLE, READ, Tool, Workspace
 
 
@@ -116,6 +118,45 @@ class TerminalApprover(Approver):
         answer = self._input("  Your choice: ")
         print("=" * 64)
         return int(answer) - 1 if answer.isdigit() and answer != "0" else None
+
+
+class WebApprover(Approver):
+    """Asks you on a web page. The agent's thread waits here until the page answers.
+
+    `pending` holds the open question for the page to show; the page calls
+    `answer(...)`. If nobody answers within `timeout` seconds, the answer is no.
+    """
+
+    def __init__(self, timeout: float = 300):
+        super().__init__()
+        self.timeout = timeout
+        self.pending: dict | None = None
+        self._answered = threading.Event()
+        self._answer = None
+
+    def answer(self, value) -> None:
+        """True/False for an approval; an option index (or None) for a question."""
+        if self.pending is None:   # nothing is being asked (e.g. a double click)
+            return
+        self.pending = None
+        self._answer = value
+        self._answered.set()
+
+    def _wait(self, request: dict):
+        self._answer = None
+        self._answered.clear()
+        self.pending = request
+        try:
+            return self._answer if self._answered.wait(self.timeout) else None
+        finally:
+            self.pending = None
+
+    def _decide(self, tool_name, args, why) -> bool:
+        return self._wait({"kind": "approve", "tool": tool_name, "args": args, "why": why}) is True
+
+    def _choose(self, question, options) -> int | None:
+        idx = self._wait({"kind": "choose", "question": question, "options": options})
+        return idx if isinstance(idx, int) and not isinstance(idx, bool) else None
 
 
 class RuleApprover(Approver):

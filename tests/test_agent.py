@@ -11,6 +11,8 @@ import ast
 import io
 import json
 import re
+import threading
+import time
 import tokenize
 from pathlib import Path
 
@@ -19,7 +21,7 @@ import pytest
 from agent.brain import ScriptedBrain
 from agent.loop import Agent, parse_action
 from agent.packs import files
-from agent.policy import PolicyDenied, RuleApprover, check
+from agent.policy import PolicyDenied, RuleApprover, WebApprover, check
 from agent.tools import WRITE, Pack, Tool, Workspace
 from evals.harness import run_scenario
 from evals.scenarios import BY_NAME
@@ -251,6 +253,33 @@ def test_receipt_and_html_trace(tmp_path):
     assert ev["before"]["status"] == "pending_payment" and ev["after"]["status"] == "paid"
     page = Path(result["trace"]).read_text(encoding="utf-8")
     assert "verified" in page and "mark_order_paid" in page
+
+
+@pytest.mark.parametrize("args, summary", [("all done", "all done"), (None, ""), ({"summary": "ok"}, "ok")])
+def test_finish_survives_args_that_are_not_an_object(args, summary, tmp_path):
+    brain = ScriptedBrain([{"thought": "done", "tool": "finish", "args": args}])
+    agent = Agent(Workspace(None, None, tmp_path), brain, RuleApprover(lambda t, a: False),
+                  packs=[files.PACK], log=lambda *_: None, trace_dir=None)
+    result = agent.run("Nothing to do")
+    assert result.finished and result.summary == summary
+
+
+def test_web_approver_waits_for_the_page_and_defaults_to_no():
+    approver = WebApprover(timeout=5)
+
+    def click(value):   # the "page": waits for the question to appear, then answers it
+        while approver.pending is None:
+            time.sleep(0.01)
+        approver.answer(value)
+
+    threading.Thread(target=click, args=(True,)).start()
+    assert approver.ask("issue_refund", {"order_id": 1}, "double charge") is True
+    threading.Thread(target=click, args=(1,)).start()
+    assert approver.choose("Which order?", ["A", "B"]) == 1
+    assert WebApprover(timeout=0.05).ask("issue_refund", {}, "nobody is there") is False
+    assert WebApprover(timeout=0.05).choose("Which order?", ["A", "B"]) is None
+    approver.answer(True)   # a click when nothing is being asked changes nothing
+    assert [r.get("approved", r.get("choice")) for r in approver.requests] == [True, "B"]
 
 
 def test_parse_action_tolerates_fences():

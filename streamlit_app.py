@@ -10,6 +10,7 @@ The agent runs in a background thread so the page stays alive while it works.
 The page just re-reads that thread's log once a second.
 """
 import datetime
+import html
 import os
 import subprocess
 import sys
@@ -30,17 +31,34 @@ SETTINGS = ("GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_FALLBACK_MODELS", "GEMINI_
 
 # The main colours live in .streamlit/config.toml; this only adds the touches a theme can't.
 INK, CREAM, DENIM = "#2a2a2a", "#f9f5ed", "#5e83ae"
+MUTE = "#b9b4aa"   # cream, dimmed, for small print
 STYLE = f"""<style>
 .eyebrow {{color:{DENIM}; font-size:.8rem; font-weight:700; letter-spacing:.14em; text-transform:uppercase}}
 h1 {{padding-top:.2rem}}
 button[kind="primary"], [data-testid="stBaseButton-primary"] {{color:{CREAM}; font-weight:700; border:0}}
-button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover {{background:{CREAM}; color:{INK}}}
+button[kind="primary"]:hover:enabled, [data-testid="stBaseButton-primary"]:hover:enabled {{background:{CREAM}; color:{INK}}}
 button[kind="secondary"]:hover, [data-testid="stBaseButton-secondary"]:hover {{border-color:{DENIM}; color:{DENIM}}}
 [data-testid="stSidebar"] {{border-right:1px solid {DENIM}40}}
 [data-testid="stVerticalBlockBorderWrapper"] {{border-color:{DENIM}}}
 [data-testid="stCode"], [data-testid="stCode"] pre {{border-radius:10px}}
 [data-testid="stMetricValue"] {{color:{DENIM}}}
 a, [data-testid="stSidebar"] a {{color:{DENIM} !important}}
+.tot {{display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:6px}}
+.tot div {{background:{INK}; border-radius:8px; padding:7px 10px; font-size:.68rem; letter-spacing:.06em;
+  text-transform:uppercase; color:{MUTE}}}
+.tot b {{display:block; font-size:1.05rem; letter-spacing:0; text-transform:none; color:{CREAM}; font-variant-numeric:tabular-nums}}
+.op {{padding:9px 0 7px; border-top:1px solid {CREAM}1f}}
+.op-top {{display:flex; gap:8px; align-items:baseline; font-size:.85rem; color:{CREAM}}}
+.op-n {{flex:none; width:1.6em; font-weight:700; font-variant-numeric:tabular-nums}}
+.op-n.ok {{color:#86cba3}} .op-n.bad {{color:#f0897c}} .op-n.warn {{color:#e8b866}} .op-n.done {{color:{DENIM}}}
+.op-tool {{flex:1; min-width:0; font-family:ui-monospace,Consolas,monospace; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap}}
+.op-t {{flex:none; font-variant-numeric:tabular-nums}}
+.op-bar {{display:flex; height:6px; border-radius:3px; background:{CREAM}1f; overflow:hidden; margin:6px 0 5px}}
+.op-bar i {{display:block; height:100%}} .think {{background:{DENIM}}} .act {{background:{CREAM}}}
+.op-sub {{font-size:.72rem; color:{MUTE}; font-variant-numeric:tabular-nums}}
+.key {{font-size:.72rem; color:{MUTE}; margin-top:8px}}
+.key i {{display:inline-block; width:9px; height:9px; border-radius:2px; margin:0 5px 0 0}}
 </style>"""
 
 
@@ -83,6 +101,7 @@ class LiveRun:
     def __init__(self, scenario: Scenario, goal: str | None, make_brain, on_done=lambda: None):
         self.scenario, self.goal = scenario, goal
         self.lines: list[str] = []
+        self.events: list[dict] = []   # one per step, with what it cost
         self.approver = WebApprover()
         self.result: dict | None = None
         self.trace_html = ""
@@ -96,7 +115,8 @@ class LiveRun:
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
                 brain: Brain = self._make_brain()
                 r = run_scenario(self.scenario, brain, Path(tmp), approver=self.approver,
-                                 log=self.lines.append, goal=self.goal, trace_dir=Path(tmp) / "runs")
+                                 log=self.lines.append, goal=self.goal, trace_dir=Path(tmp) / "runs",
+                                 on_event=self.events.append)
                 if r["trace"]:
                     self.trace_html = Path(r["trace"]).read_text(encoding="utf-8")
                 self.result = r
@@ -141,6 +161,44 @@ def show_question(run: LiveRun) -> None:
             st.button("Answer", key=f"answer{n}", type="primary", on_click=answer,
                       args=(run, request), kwargs={"pick_key": f"pick{n}"})
         st.caption(f"No answer within {int(run.approver.timeout / 60)} minutes counts as no.")
+
+
+def size(n: int) -> str:
+    return f"{n:,} B" if n < 1024 else f"{n / 1024:.1f} KB"
+
+
+def show_costs() -> None:
+    """Sidebar: what every step cost, as it happens. Time to think, time to act, tokens, data handed back."""
+    run: LiveRun = st.session_state["run"]
+    events = list(run.events)
+    st.header("Run cost")
+    if not events:
+        st.caption("Each step's time and tokens will show up here as Shift works.")
+        return
+    costs = [e["cost"] for e in events]
+    think, act = sum(c["think_s"] for c in costs), sum(c["act_s"] for c in costs)
+    tokens_in, tokens_out = sum(c["input_tokens"] for c in costs), sum(c["output_tokens"] for c in costs)
+    longest = max(c["think_s"] + c["act_s"] for c in costs) or 1
+    parts = [f"<div class='tot'><div><b>{think:.1f}s</b>thinking</div><div><b>{act:.1f}s</b>acting</div>"
+             f"<div><b>{tokens_in:,}</b>tokens in</div><div><b>{tokens_out:,}</b>tokens out</div></div>"]
+    for e in events:
+        c, action, status = e["cost"], e["action"], e["observation"]["status"]
+        tool = action["tool"] if action else "unreadable reply"
+        mark = ("done" if tool == "finish" else "ok" if status == "ok" else
+                "warn" if status == "denied_by_owner" else "bad")
+        tokens = f"{c['input_tokens']:,} in · {c['output_tokens']:,} out · " if tokens_in or tokens_out else ""
+        parts.append(
+            f"<div class='op'><div class='op-top'><span class='op-n {mark}'>{e['step']}</span>"
+            f"<span class='op-tool'>{html.escape(str(tool))}</span>"
+            f"<span class='op-t'>{c['think_s'] + c['act_s']:.1f}s</span></div>"
+            f"<div class='op-bar'><i class='think' style='width:{100 * c['think_s'] / longest:.1f}%'></i>"
+            f"<i class='act' style='width:{100 * c['act_s'] / longest:.1f}%'></i></div>"
+            f"<div class='op-sub'>think {c['think_s']}s · act {c['act_s']}s<br>{tokens}{size(c['data_bytes'])} back</div></div>")
+    parts.append("<div class='key'><i class='think'></i>thinking: the model deciding<br>"
+                 "<i class='act'></i>acting: the tool, plus any wait for you</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
+    if tokens_in:
+        st.caption("Tokens in grows every step because the whole conversation so far is sent again.")
 
 
 def show_run(live: bool) -> None:
@@ -217,6 +275,7 @@ def main() -> None:
         if os.environ.get("GEMINI_API_KEY"):
             st.caption(f"No key? {demo_runs_left()} shared demo run(s) left today.")
         st.divider()
+        cost_box = st.container()   # filled in below, once we know whether a run exists
         st.caption("The store is a fake one that misbehaves on purpose (silent write failures, a 503, a slow "
                    "page). Each run gets a fresh copy, so nothing you do here is real.")
 
@@ -234,6 +293,9 @@ def main() -> None:
 
     if run is not None:
         live = not run.done
+        with cost_box:
+            st.fragment(run_every=1 if live else None)(show_costs)()
+            st.divider()
         st.fragment(run_every=1 if live else None)(show_run)(live)
 
 

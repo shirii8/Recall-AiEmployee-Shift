@@ -23,7 +23,7 @@ def free_port() -> int:
 
 def run_scenario(scenario: Scenario, brain: Brain, workdir: Path, approver: Approver | None = None,
                  headless: bool = True, log=print, goal: str | None = None, max_steps: int = 30,
-                 trace_dir: str | Path | None = "runs", port: int | None = None) -> dict:
+                 trace_dir: str | Path | None = "runs", port: int | None = None, on_event=None) -> dict:
     db_path, files_dir = scenario.setup(Path(workdir) / scenario.name)
     approver = approver or RuleApprover(scenario.owner_rule, scenario.owner_choice)
     with StoreServer(str(db_path), port=port or free_port(), faults=scenario.faults) as server:
@@ -31,7 +31,7 @@ def run_scenario(scenario: Scenario, brain: Brain, workdir: Path, approver: Appr
         browser = Browser(server.url, headless=headless)
         try:
             agent = Agent(Workspace(store, browser, files_dir), brain, approver,
-                          max_steps=max_steps, log=log, trace_dir=trace_dir)
+                          max_steps=max_steps, log=log, trace_dir=trace_dir, on_event=on_event)
             result = agent.run(goal or scenario.goal)
         finally:
             browser.close()

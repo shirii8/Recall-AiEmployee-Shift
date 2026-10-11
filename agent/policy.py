@@ -14,11 +14,12 @@ ALLOWED. It works like Row Level Security in Postgres: default deny.
 The actual business rules live with their tools in agent/packs/. This file is
 only the engine, so it works for any job.
 """
-import threading
+import threading  # separate flows of execution within a program.
 
 from agent.tools import IRREVERSIBLE, READ, Tool, Workspace
 
-
+#Exception is Python's built-in class for errors.
+#PolicyDenied is a specific type of error used when an action violates a safety rule.
 class PolicyDenied(Exception):
     pass
 

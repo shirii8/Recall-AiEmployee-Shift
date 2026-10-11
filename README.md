@@ -23,7 +23,7 @@ I built it from a real problem. While running [Tessch](https://www.tessch.in/), 
 | Guesses when the data is ambiguous | **Stops and asks when uncertain, not only when risky.** If two orders could match one payment, it asks the owner to choose. The guardrail also *refuses* the question when one order clearly matches, so the owner isn't bothered needlessly. |
 | Asks a human about everything, or nothing | Reads and reversible writes are autonomous. Refunds and emails need approval, and the owner's "no" is final. |
 | Obeys instructions hidden in data | **Prompt-injection defence in two layers.** Outsider text is labelled untrusted, and even if the model is fooled, the guardrail still blocks the action. Tested. |
-| "Why did it do that?" "No idea." | **Decision trace.** The terminal shows decide → act → guard → owner → verify for every step, and each run saves an HTML timeline plus a JSON trace. |
+| "Why did it do that?" "No idea." | **Decision trace.** The terminal shows decide → act → guard → owner → verify for every step, and each run saves an HTML timeline plus a JSON trace. Every step also records what it cost: time to think, time to act, tokens in and out, and the size of the data it handed back. |
 | "It generalizes" (claimed) | **Generalization, demonstrated.** The core never mentions orders or payments, and a test enforces that. New jobs are plug-in *packs*: returns processing was added as one file, and a test teaches it a non-store job in about 15 lines. |
 | "It worked when I tried it" | **Reliability evals.** 12 scenarios, each run N times and auto-graded on doing the right thing *and* not doing wrong things. |
 
@@ -53,7 +53,7 @@ I built it from a real problem. While running [Tessch](https://www.tessch.in/), 
 | `agent/tools.py` | Tool framework: `Tool` (run / rule / snapshot / verify), `Pack`, `Registry`. |
 | `agent/packs/` | The jobs: `files`, `store_ops`, `returns`. All business knowledge lives here. |
 | `agent/browser.py` | Playwright reads the admin dashboard: waits for late data, retries with backoff. |
-| `agent/trace_html.py` | Renders each run's decision trace as an HTML timeline. |
+| `agent/trace_html.py` | Renders each run's decision trace as an HTML timeline, with a per-step time and token breakdown. |
 | `store/` | The fake store, with fault injection: silent write failure, a 503 once, a slow page, a page error once. |
 | `evals/` | 12 scenarios, a grader, and the reliability runner. |
 | `tests/` | 40 offline tests (no API key needed). |
@@ -107,7 +107,7 @@ Free Gemini keys have a small per-model daily request cap, and one scenario take
 
 ## Run it on the web
 
-`streamlit run streamlit_app.py` opens the demo in a browser tab. Pick a scenario, watch the decision trace appear step by step, and approve or decline refunds and emails with buttons on the page. If nobody answers within 5 minutes, the answer is no.
+`streamlit run streamlit_app.py` opens the demo in a browser tab. Pick a scenario, watch the decision trace appear step by step, and approve or decline refunds and emails with buttons on the page. The sidebar tracks what each step costs as it happens: thinking time, acting time, tokens and data size. If nobody answers within 5 minutes, the answer is no.
 
 To put it online for free with [Streamlit Community Cloud](https://share.streamlit.io):
 

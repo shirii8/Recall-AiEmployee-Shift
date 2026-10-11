@@ -114,13 +114,14 @@ def diff(before: dict | None, after: dict | None) -> str:
 class Agent:
     def __init__(self, ws: Workspace, brain: Brain, approver: Approver, packs=None,
                  max_steps: int = 30, max_writes: int = 20, max_tokens: int = 400_000,
-                 log=print, trace_dir: str | Path | None = "runs"):
+                 log=print, trace_dir: str | Path | None = "runs", on_event=None):
         from agent.packs import DEFAULT_PACKS
         self.registry = Registry(packs if packs is not None else DEFAULT_PACKS)
         self.ws, self.brain, self.approver = ws, brain, approver
         self.ws.approver = approver
         self.max_steps, self.max_writes, self.max_tokens = max_steps, max_writes, max_tokens
         self.log = log
+        self.on_event = on_event   # called with each step's event as it happens (for a live UI)
         self.trace_dir = Path(trace_dir) if trace_dir else None
 
     # ------------------------------------------------------------ one action
@@ -204,8 +205,13 @@ class Agent:
         try:
             for step in range(1, self.max_steps + 1):
                 result.steps = step
+                asked_at, used = time.time(), dict(self.brain.usage)
                 raw = self.brain.next_action(system, messages)
                 messages.append({"role": "model", "text": raw})
+                # What this step cost: time to think, time to act, and tokens sent/received.
+                cost = {"think_s": round(time.time() - asked_at, 2), "act_s": 0.0,
+                        "input_tokens": self.brain.usage["input_tokens"] - used["input_tokens"],
+                        "output_tokens": self.brain.usage["output_tokens"] - used["output_tokens"]}
 
                 tokens = self._tokens_used(usage_start)
                 if tokens > self.max_tokens:
@@ -218,7 +224,7 @@ class Agent:
                 except (ValueError, json.JSONDecodeError) as e:
                     observation = {"status": "error", "error": f"Reply was not a valid action ({e}). "
                                    'Reply with one JSON object: {"thought","tool","args"}.'}
-                    self._record(result, step, None, observation)
+                    self._record(result, step, None, observation, cost)
                     messages.append({"role": "user", "text": json.dumps(observation)})
                     continue
 
@@ -226,11 +232,13 @@ class Agent:
                 if tool_name == "finish":
                     result.finished, result.stop_reason = True, "finished"
                     result.summary = str(args.get("summary", "") if isinstance(args, dict) else args or "")
-                    self._record(result, step, action, {"status": "finished"})
+                    self._record(result, step, action, {"status": "finished"}, cost)
                     break
 
+                acted_at = time.time()
                 observation = self.execute(tool_name, args, thought, result)
-                self._record(result, step, action, observation)
+                cost["act_s"] = round(time.time() - acted_at, 2)   # includes waiting for the owner, if asked
+                self._record(result, step, action, observation, cost)
                 messages.append({"role": "user", "text": json.dumps(
                     {"step": step, "tool": tool_name, **observation}, ensure_ascii=False, default=str)})
 
@@ -256,9 +264,20 @@ class Agent:
         return (u["input_tokens"] - start["input_tokens"]) + (u["output_tokens"] - start["output_tokens"])
 
     # ------------------------------------------------------ the decision trace
-    def _record(self, result: RunResult, step: int, action: dict | None, observation: dict):
-        result.events.append({"step": step, "action": action, "observation": observation,
-                              "t": round(time.time(), 2)})
+    def _record(self, result: RunResult, step: int, action: dict | None, observation: dict, cost: dict):
+        # data_bytes: how much the step handed back (it is resent to the model on every later step).
+        cost["data_bytes"] = len(json.dumps(observation, ensure_ascii=False, default=str).encode("utf-8"))
+        event = {"step": step, "action": action, "observation": observation, "cost": cost,
+                 "t": round(time.time(), 2)}
+        result.events.append(event)
+        self._log_step(step, action, observation)
+        tokens = (f" · {cost['input_tokens']:,} in / {cost['output_tokens']:,} out tokens"
+                  if cost["input_tokens"] or cost["output_tokens"] else "")
+        self.log(f"  cost     think {cost['think_s']}s · act {cost['act_s']}s{tokens} · {cost['data_bytes']:,} bytes back")
+        if self.on_event:
+            self.on_event(event)
+
+    def _log_step(self, step: int, action: dict | None, observation: dict):
         self.log(f"\n── Step {step} " + "─" * 50)
         if action is None:
             self.log(f"  reply    unreadable → {observation['error'][:90]}")

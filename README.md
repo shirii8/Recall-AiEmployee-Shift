@@ -56,8 +56,7 @@ I built it from a real problem. While running [Tessch](https://www.tessch.in/), 
 | `agent/trace_html.py` | Renders each run's decision trace as an HTML timeline. |
 | `store/` | The fake store, with fault injection: silent write failure, a 503 once, a slow page, a page error once. |
 | `evals/` | 12 scenarios, a grader, and the reliability runner. |
-| `tests/` | 40 offline tests (no API key needed). |
-| `streamlit_app.py` | The same live demo as a web page: watch the trace, approve or decline in the browser. |
+| `tests/` | 39 offline tests (no API key needed). |
 
 ## The eval suite
 
@@ -92,30 +91,17 @@ pip install -r requirements.txt
 python -m playwright install chromium
 cp .env.example .env        # paste your free Gemini key from https://aistudio.google.com/apikey
 
-python -m pytest -q                          # 40 offline tests, no API key needed
+python -m pytest -q                          # 39 offline tests, no API key needed
 python run.py                                # list scenarios
 python run.py ambiguous_match                # it will ask YOU which order a payment belongs to
 python run.py duplicate_refund               # YOU approve or decline the refund
 python run.py upi_dashboard --show-browser   # watch the browser step happen
 python -m evals.run_evals --runs 3           # full reliability report
-streamlit run streamlit_app.py               # the same demo as a web page
 ```
 
 Every run prints a live decision trace and saves `runs/run_*.html` (open it in a browser) plus `runs/run_*.json`.
 
 Free Gemini keys have a small per-model daily request cap, and one scenario takes roughly 5 to 10 requests. When a model runs out, Shift switches to the next one in `GEMINI_FALLBACK_MODELS` and says so.
-
-## Run it on the web
-
-`streamlit run streamlit_app.py` opens the demo in a browser tab. Pick a scenario, watch the decision trace appear step by step, and approve or decline refunds and emails with buttons on the page. If nobody answers within 5 minutes, the answer is no.
-
-To put it online for free with [Streamlit Community Cloud](https://share.streamlit.io):
-
-1. Push this repo to GitHub.
-2. On share.streamlit.io choose **Create app**, pick the repo, branch `main`, and main file `streamlit_app.py`.
-3. Optional: under **Advanced settings → Secrets**, add `GEMINI_API_KEY = "your-key"` so visitors without a key get a few shared demo runs. `DEMO_RUNS_PER_DAY = "10"` sets how many.
-
-Visitors can always paste their own free Gemini key in the sidebar. It is used for that run only and never saved. `packages.txt` installs the system libraries Chromium needs, and the app downloads Playwright's Chromium on first start.
 
 ## Adding a new job
 
@@ -135,15 +121,15 @@ Write a pack: tools, each with a rule, plus a few lines of guidance. Then add it
 - Payments arrive as a CSV export (`payments.csv`), the way Razorpay and bank statements can be downloaded.
 - A genuine payment matches an order on method, exact amount, and reference (the Razorpay order ref, or the UPI transaction id the customer typed in).
 - The return policy is: paid orders only, unopened, within 7 days of delivery.
-- One owner approves everything. Approvals happen in the terminal (`run.py`) or on the web page (`streamlit_app.py`).
+- One owner approves everything. Approvals happen in the terminal for the demo.
 
 ## Models, APIs and frameworks
 
-Google Gemini (`gemini-3.8-flash` by default, via `google-genai`), Playwright + Chromium, FastAPI + Uvicorn, SQLite, Requests, Streamlit, pytest.
+Google Gemini (`gemini-3.8-flash` by default, via `google-genai`), Playwright + Chromium, FastAPI + Uvicorn, SQLite, Requests, pytest.
 
 ## Known limitations and next steps
 
 - The fake store is a stand-in. Next would be the real Razorpay API and an authenticated admin panel.
 - One model call per step is simple but slow. Batching independent reads would cut latency and tokens.
-- Approvals are in the terminal or on the demo page. In production: Slack or email with a timeout that defaults to "no", plus an audit log.
+- Approvals are in the terminal. In production: Slack or email with a timeout that defaults to "no", plus an audit log.
 - More scenarios: partial refunds, a payment split across two orders, and comparing models on the same suite. Run evals in CI.

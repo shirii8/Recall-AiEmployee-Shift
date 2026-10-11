@@ -29,18 +29,18 @@ KEY_HELP = "https://aistudio.google.com/apikey"
 SETTINGS = ("GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_FALLBACK_MODELS", "GEMINI_MIN_SECONDS_BETWEEN_CALLS")
 
 # The main colours live in .streamlit/config.toml; this only adds the touches a theme can't.
-INK, CREAM, PINK = "#2a2a2a", "#f9f5ed", "#fe83ae"
+INK, CREAM, DENIM = "#2a2a2a", "#f9f5ed", "#5e83ae"
 STYLE = f"""<style>
-.eyebrow {{color:{PINK}; font-size:.8rem; font-weight:700; letter-spacing:.14em; text-transform:uppercase}}
+.eyebrow {{color:{DENIM}; font-size:.8rem; font-weight:700; letter-spacing:.14em; text-transform:uppercase}}
 h1 {{padding-top:.2rem}}
-button[kind="primary"], [data-testid="stBaseButton-primary"] {{color:{INK}; font-weight:700; border:0}}
+button[kind="primary"], [data-testid="stBaseButton-primary"] {{color:{CREAM}; font-weight:700; border:0}}
 button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover {{background:{CREAM}; color:{INK}}}
-button[kind="secondary"]:hover, [data-testid="stBaseButton-secondary"]:hover {{border-color:{PINK}; color:{PINK}}}
-[data-testid="stSidebar"] {{border-right:1px solid {PINK}40}}
-[data-testid="stVerticalBlockBorderWrapper"] {{border-color:{PINK}}}
+button[kind="secondary"]:hover, [data-testid="stBaseButton-secondary"]:hover {{border-color:{DENIM}; color:{DENIM}}}
+[data-testid="stSidebar"] {{border-right:1px solid {DENIM}40}}
+[data-testid="stVerticalBlockBorderWrapper"] {{border-color:{DENIM}}}
 [data-testid="stCode"], [data-testid="stCode"] pre {{border-radius:10px}}
-[data-testid="stMetricValue"] {{color:{PINK}}}
-a, [data-testid="stSidebar"] a {{color:{PINK} !important}}
+[data-testid="stMetricValue"] {{color:{DENIM}}}
+a, [data-testid="stSidebar"] a {{color:{DENIM} !important}}
 </style>"""
 
 

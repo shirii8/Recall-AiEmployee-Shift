@@ -1,8 +1,8 @@
-# The web demo's colours: charcoal page, cream text, pink accent.
+# The web demo's colours: charcoal page, cream text, denim accent.
 [theme]
 base = "dark"
-primaryColor = "#fe83ae"
+primaryColor = "#5e83ae"
 backgroundColor = "#2a2a2a"
 secondaryBackgroundColor = "#222222"
 textColor = "#f9f5ed"
-linkColor = "#fe83ae"
+linkColor = "#5e83ae"

@@ -21,14 +21,15 @@ RETURN_WINDOW_DAYS = 7
 
 
 def _accept_return(ws, a):
+    #ws contains the store Api
     return ws.store.accept_return(a["order_id"])
 
-
+#checks return policy
 def _rule_accept_return(ws, a):
     order = order_full(ws, a["order_id"])
     if order["status"] != "paid":
         raise PolicyDenied(f"order {order['id']} is '{order['status']}'; only paid orders can be returned")
-    req = next((r for r in ws.read_csv("returns.csv") if r["order_id"] == order["id"]), None)
+    req = next((r for r in ws.read_csv("returns.csv") if r["order_id"] == order["id"]), None) #next(iterator/generator, None)
     if req is None:
         raise PolicyDenied(f"no return request for order {order['id']} in returns.csv")
     if str(req["condition"]).lower() != "unopened":
@@ -56,7 +57,7 @@ PACK = Pack(
         Tool("accept_return", "Accept a customer's return: marks the order returned and puts the item back in stock.",
              {"order_id": (int, "order id")}, WRITE, _accept_return, _rule_accept_return, _snap_return,
              _verify_return),
-    ],
+    ], #name, desc, params, risk,run, rule, snap, verify
     guidance=f"""
 - Return requests are in returns.csv. Policy: paid orders only, item unopened, within {RETURN_WINDOW_DAYS} days
   of delivery.

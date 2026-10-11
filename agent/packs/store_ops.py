@@ -48,10 +48,14 @@ def mismatch_reason(pay: dict, order: dict) -> str | None:
 
 
 def owner_confirmed(ws, payment_id: str, order_id: int) -> bool:
-    return any(d.get("payment_id") == payment_id and d.get("order_id") == order_id for d in ws.owner_decisions)
+    return any(
+        d.get("payment_id") == payment_id and d.get("order_id") == order_id
+        for d in ws.owner_decisions
+    )  # any() returns True if at least one item satisfies the condition.
 
 
 def require_payment(ws, payment_id: str) -> dict:
+    #makes sure the payment exists b4 agent sees it
     p = payment(ws, payment_id)
     if p is None:
         raise PolicyDenied(f"payment {payment_id} is not in payments.csv")
@@ -65,11 +69,10 @@ def require_unused(ws, pay: dict):
 
 
 # --------------------------------------------------------------- read tools
-
+# The customer cannot give the AI permission to bypass its rules. The label tells the AI that this text is customer-provided data, not trusted instructions.
 def _browser_read_order(ws, a):
     data = ws.browser.read_admin_order(a["order_id"])
-    # The note is written by a stranger: label it so the brain treats it as data,
-    # never as instructions (prompt-injection defence, layer 1 of 2).
+    #  (prompt-injection defence, layer 1 of 2).
     data["customer_note"] = {"UNTRUSTED_TEXT_FROM_CUSTOMER": data["customer_note"]}
     return data
 
@@ -125,6 +128,7 @@ def _ask_which_order(ws, a):
 def _rule_ask_which_order(ws, a):
     """Only ask when it's GENUINELY ambiguous. Bothering the owner needlessly is also a failure."""
     pay = require_payment(ws, a["payment_id"])
+    #removes duplicate order ids
     ids = list(dict.fromkeys(a["candidate_order_ids"]))
     if not 2 <= len(ids) <= 5:
         raise PolicyDenied("give 2-5 candidate orders; if only one fits, it isn't ambiguous")
@@ -155,7 +159,7 @@ def _rule_flag(ws, a):
     if not 3 <= len(a["reason"]) <= 300:
         raise PolicyDenied("reason must be 3-300 characters")
 
-
+#returns a tuple with boolean and lsit of flags saved in after snap
 def _verify_flag(a, before, after):
     return a["reason"] in after["flags"], f"order flags are now {after['flags']}"
 
@@ -171,6 +175,7 @@ def _rule_set_stock(ws, a):
         raise PolicyDenied(f"no product with sku {a['sku']}")
     if not 0 <= a["stock"] <= 100_000:
         raise PolicyDenied("stock must be between 0 and 100000")
+    #creates dict sku mapped to its stock
     counted = {r["sku"]: r["stock"] for r in ws.read_csv("inventory.csv")}
     if a["sku"] in counted and counted[a["sku"]] != a["stock"]:
         raise PolicyDenied(f"inventory.csv says {counted[a['sku']]} for {a['sku']}, not {a['stock']}")
@@ -202,7 +207,7 @@ def _rule_refund(ws, a):
     if any(r["payment_id"] == pay["payment_id"] for r in ws.store.list_refunds()):
         raise PolicyDenied(f"payment {pay['payment_id']} was already refunded")
     if order["payment_id"] == pay["payment_id"] and order["status"] == "paid":
-        raise PolicyDenied("that payment is what keeps this order paid; refunding it needs a human")
+        raise PolicyDenied("that payment is what keeps this order paid; refunding it needs a human") #irreversible
 
 
 def _snap_refund(ws, a):

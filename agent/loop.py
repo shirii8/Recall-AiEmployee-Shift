@@ -225,7 +225,7 @@ class Agent:
                 tool_name, args, thought = action["tool"], action["args"], action["thought"]
                 if tool_name == "finish":
                     result.finished, result.stop_reason = True, "finished"
-                    result.summary = str(args.get("summary", ""))
+                    result.summary = str(args.get("summary", "") if isinstance(args, dict) else args or "")
                     self._record(result, step, action, {"status": "finished"})
                     break
 

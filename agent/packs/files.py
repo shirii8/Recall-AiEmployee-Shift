@@ -7,9 +7,10 @@ def _list_files(ws, a):
 
 
 def _read_file(ws, a):
+    # helps keep the existence check focused on a filename inside files_dir
     if not (ws.files_dir / a["name"].split("/")[-1]).exists():
         raise FileNotFoundError(f"no file named {a['name']}")
-    return ws.read_csv(a["name"])
+    return ws.read_csv(a["name"])  # returns its rows as a list of dictionaries.
 
 
 PACK = Pack(

@@ -28,6 +28,21 @@ from evals.scenarios import BY_NAME, SCENARIOS, Scenario
 KEY_HELP = "https://aistudio.google.com/apikey"
 SETTINGS = ("GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_FALLBACK_MODELS", "GEMINI_MIN_SECONDS_BETWEEN_CALLS")
 
+# The main colours live in .streamlit/config.toml; this only adds the touches a theme can't.
+INK, CREAM, PINK = "#2a2a2a", "#f9f5ed", "#fe83ae"
+STYLE = f"""<style>
+.eyebrow {{color:{PINK}; font-size:.8rem; font-weight:700; letter-spacing:.14em; text-transform:uppercase}}
+h1 {{padding-top:.2rem}}
+button[kind="primary"], [data-testid="stBaseButton-primary"] {{color:{INK}; font-weight:700; border:0}}
+button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover {{background:{CREAM}; color:{INK}}}
+button[kind="secondary"]:hover, [data-testid="stBaseButton-secondary"]:hover {{border-color:{PINK}; color:{PINK}}}
+[data-testid="stSidebar"] {{border-right:1px solid {PINK}40}}
+[data-testid="stVerticalBlockBorderWrapper"] {{border-color:{PINK}}}
+[data-testid="stCode"], [data-testid="stCode"] pre {{border-radius:10px}}
+[data-testid="stMetricValue"] {{color:{PINK}}}
+a, [data-testid="stSidebar"] a {{color:{PINK} !important}}
+</style>"""
+
 
 def load_settings() -> None:
     """Settings come from .env on your laptop, or from Streamlit's secrets when deployed."""
@@ -184,7 +199,9 @@ def start(scenario: Scenario, goal: str, own_key: str) -> None:
 def main() -> None:
     st.set_page_config(page_title="Shift: an AI operations employee", page_icon="🧾", layout="wide")
     load_settings()
-    st.title("Shift: an AI operations employee you can trust")
+    st.markdown(STYLE, unsafe_allow_html=True)
+    st.markdown("<div class='eyebrow'>Shift · live demo</div>", unsafe_allow_html=True)
+    st.title("An AI operations employee you can trust")
     st.write("Give it a store owner's goal. It reads the bank export, checks orders through the store's API, "
              "opens the admin dashboard in a real browser when it has to, and makes the fixes. Every change is "
              "re-read and verified, guardrails in code refuse bad actions, and refunds and emails wait for **you**.")

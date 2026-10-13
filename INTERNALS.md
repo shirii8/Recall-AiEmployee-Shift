@@ -1,14 +1,14 @@
 # Shift internals
 
-A code-level description of this repository as of commit `75a181d` (8 commits on `main`, about 2,480 lines of Python). Every claim names the file and function it comes from. `[VERIFY]` marks anything not confirmed by code or by a run. "Not implemented" means exactly that.
+A code-level description of this repository as of commit `b38c6c5` (15 commits on `main`, about 3,050 lines of Python). Every claim names the file and function it comes from. `[VERIFY]` marks anything not confirmed by code or by a run. "Not implemented" means exactly that.
 
-Conventions: `loop.py:execute` means the function `execute` in `agent/loop.py`. Line numbers are given only where they help and will drift as the code changes.
+Conventions: `loop.py:execute` means the function `execute` in `agent/loop.py`. Line numbers are given only where they help and will drift as the code changes; they were last checked against the working tree on 2026-10-14.
 
 ---
 
 ## 1. Plain-English overview
 
-Shift is a command-line agent that takes a one-sentence goal from a shop owner (for example "Reconcile today's payments") and carries it out against a store backend by calling tools one at a time. The real problem behind it is manual payment reconciliation for a small online shop: matching Razorpay and UPI payments from a bank export to orders, plus related chores such as stock sync, refunds for double charges, delay emails and returns. An LLM (Google Gemini) chooses each next action, but Python code decides whether the action is allowed, asks a human before refunds and emails, and re-reads the store after each write to confirm the change landed. The store it works against is a fake one built for this project (FastAPI + SQLite, with deliberately injected faults), not a real shop. It helps a solo store owner in principle; in its current form it is a demonstration and evaluation harness, with no integration with any real payment or store system.
+Shift is an agent, run from the command line (`run.py`) or from a web page (`streamlit_app.py`), that takes a one-sentence goal from a shop owner (for example "Reconcile today's payments") and carries it out against a store backend by calling tools one at a time. The real problem behind it is manual payment reconciliation for a small online shop: matching Razorpay and UPI payments from a bank export to orders, plus related chores such as stock sync, refunds for double charges, delay emails and returns. An LLM (Google Gemini) chooses each next action, but Python code decides whether the action is allowed, asks a human before refunds and emails, and re-reads the store after each write to confirm the change landed. The store it works against is a fake one built for this project (FastAPI + SQLite, with deliberately injected faults), not a real shop. It helps a solo store owner in principle; in its current form it is a demonstration and evaluation harness, with no integration with any real payment or store system.
 
 ---
 
@@ -18,34 +18,36 @@ The whole loop is `Agent.run` and `Agent.execute` in `agent/loop.py`. The stages
 
 | Stage | What actually happens | Code |
 |---|---|---|
-| Goal | The goal string is wrapped as the first user message: `"GOAL FROM THE OWNER: {goal}\nBegin."` The system prompt is built once from `SYSTEM_PROMPT` plus the tool list and pack guidance. | `loop.py:run` (lines 195–198), `tools.py:Registry.describe`, `Registry.guidance` |
+| Goal | The goal string is wrapped as the first user message: `"GOAL FROM THE OWNER: {goal}\nBegin."` The system prompt is built once from `SYSTEM_PROMPT` plus the tool list and pack guidance. | `loop.py:run` (lines 210–213), `tools.py:Registry.describe`, `Registry.guidance` |
 | Understand | **No separate stage.** Understanding is whatever read tools the model chooses to call first. The prompt only says "Look before you act. Read the relevant files and records first." | `SYSTEM_PROMPT` in `loop.py` |
 | Plan | **Not implemented as a step.** There is no planner, no task list, no plan object. The model emits one action per call with a one-sentence `thought`. Any plan lives implicitly in the conversation history. | `brain.py:GeminiBrain.next_action` |
 | Execute | The raw reply is parsed to `{thought, tool, args}`. `execute` then runs, in this order: unknown-tool check, `validate_args`, write-budget check, the tool's rule via `check`, owner approval if the tool is irreversible, `snapshot` (before), `tool.run`. | `loop.py:parse_action`, `loop.py:execute`, `policy.py:validate_args`, `policy.py:check`, `policy.py:needs_approval` |
-| Observe | `execute` returns an observation dict (`status` is one of `ok`, `denied_by_guardrail`, `denied_by_owner`, `error`, `verification_failed`). It is recorded, printed, and appended to the conversation as a user message containing JSON. | `loop.py:_record`, `loop.py:run` (lines 232–235) |
-| Adapt | No dedicated mechanism. The model sees the denial reason or error text on its next call and is told by the prompt to change plan. The only code-level adaptation is stuck detection: the same tool with the same args failing three times in a row stops the run. | `loop.py:run` (lines 237–243) |
-| Verify | For tools that define `verify`: `snapshot` again (after), compare with before, and if the check fails and the tool is `retry_safe`, run the tool once more and re-check. | `loop.py:execute` (lines 177–191) |
-| Complete | The model calls the pseudo-tool `finish` with a `summary`. The loop sets `finished = True` and breaks. **Nothing checks that the goal was actually met.** Other exits: step limit (30), token budget (400,000), stuck detection. | `loop.py:run` (lines 226–230, 211–214, 244–246) |
+| Observe | `execute` returns an observation dict (`status` is one of `ok`, `denied_by_guardrail`, `denied_by_owner`, `error`, `verification_failed`). It is recorded together with what the step cost (section 4.7), printed, and appended to the conversation as a user message containing JSON. | `loop.py:_record`, `loop.py:run` (lines 252–257) |
+| Adapt | No dedicated mechanism. The model sees the denial reason or error text on its next call and is told by the prompt to change plan. The only code-level adaptation is stuck detection: the same tool with the same args failing three times in a row stops the run. | `loop.py:run` (lines 259–265) |
+| Verify | For tools that define `verify`: `snapshot` again (after), compare with before, and if the check fails and the tool is `retry_safe`, run the tool once more and re-check. | `loop.py:execute` (lines 192–206) |
+| Complete | The model calls the pseudo-tool `finish` with a `summary`. The loop sets `finished = True` and breaks. **Nothing checks that the goal was actually met.** Other exits: step limit (30), token budget (400,000), stuck detection. | `loop.py:run` (lines 246–250, 230–234, 266–268) |
 
 Control flow for one iteration of `run`:
 
-1. `brain.next_action(system, messages)` returns raw text.
+1. `brain.next_action(system, messages)` returns raw text. The call is timed and the change in `brain.usage` is taken, giving the step's `think_s`, `input_tokens` and `output_tokens`.
 2. Token budget check (`_tokens_used`). It happens after the call, so the budget can be overshot by one call.
 3. `parse_action(raw)`. On failure, an error observation is appended and the loop `continue`s. This costs a step and bypasses stuck detection.
 4. If `tool == "finish"`: record and break.
-5. `execute(...)` returns an observation; `_record` logs it; it is appended to `messages`.
+5. `execute(...)` returns an observation and is timed (`act_s`, which includes any wait for the owner); `_record` logs it and calls `on_event` if one was given; it is appended to `messages`.
 6. Stuck detection.
 7. In `finally`: `_print_receipt` and `_save_trace` always run, including when an exception escapes.
 
-State kept during a run, all in memory: `messages` (the full conversation, resent every step), `RunResult.events`, `Workspace.owner_decisions`, `Approver.requests`. There is no persistence and no resume.
+State kept during a run, all in memory: `messages` (the full conversation, resent every step), `RunResult.events` (each with a `cost` dict), `Workspace.owner_decisions`, `Approver.requests`. There is no persistence and no resume.
 
 ---
 
 ## 3. Architecture
 
 ```
-run.py / evals/run_evals.py
+run.py / evals/run_evals.py / streamlit_app.py
         │  picks a Scenario, builds brain + approver
+        │  (streamlit_app.py:LiveRun does this in a background thread and
+        │   passes a WebApprover plus on_event/log callbacks the page reads)
         ▼
 evals/harness.py:run_scenario
         │  Scenario.setup → fresh store.db + CSV files in a temp dir
@@ -57,9 +59,9 @@ evals/harness.py:run_scenario
 │    ├─ loop.py:parse_action                                                      │
 │    └─ loop.py:Agent.execute                                                     │
 │         ├─ policy.py:validate_args, check        (guardrail engine)             │
-│         ├─ policy.py:Approver.ask / choose       (human owner)                  │
+│         ├─ policy.py:Approver.ask / choose       (owner: terminal or web page)  │
 │         ├─ tool.snapshot → tool.run → tool.snapshot → tool.verify               │
-│         └─ loop.py:_record → trace_html.py:render → runs/run_*.html|json        │
+│         └─ loop.py:_record (+ cost, on_event) → trace_html.py:render → run_*.*  │
 └───────────────────────────────┬─────────────────────────────────────────────────┘
                                 │ Tool objects (run / rule / snapshot / verify)
 ┌──────────────── agent/packs/ (all business knowledge) ─────────────────────────┐
@@ -89,8 +91,10 @@ This is the live `flaky_write` run (`python run.py flaky_write`), which finished
 7. `_snap_order` records `{status: pending_payment, payment_id: None, flags: []}`. `_mark_paid` posts to `/api/orders/801/mark_paid`. The store's fault makes it return `{"ok": true}` without writing.
 8. `_snap_order` again shows the order still pending. `_verify_mark_paid` returns false. Because the tool is `retry_safe`, `execute` calls `_mark_paid` again; this time the store writes. The third snapshot shows `paid`. The observation carries `verified: true, auto_retried: true` and the before/after evidence.
 9. Order 802 is marked paid normally. The model calls `finish` with a summary.
-10. `_print_receipt` prints the changes; `_save_trace` writes `runs/run_*.json` and `.html`.
+10. `_print_receipt` prints the changes; `_save_trace` writes `runs/run_*.json` and `.html`. Each step in both carries its `cost`.
 11. Back in `run_scenario`, `grade` re-reads orders, refunds, emails and products from the store and compares them with `scenario.expect`. `run.py` prints `GRADE: PASS`.
+
+The web demo follows the same path from step 2 onward. The differences are in step 1 and in who answers approvals: `streamlit_app.py:start` creates a `LiveRun`, whose thread calls `run_scenario` with a `WebApprover`, `log=self.lines.append` and `on_event=self.events.append`; the page re-reads those lists once a second (section 4.9).
 
 ---
 
@@ -155,6 +159,7 @@ Shared helpers in `store_ops.py`: `payments`, `payment`, `order_full` (the trust
 - `needs_approval`: true only for `IRREVERSIBLE`.
 - `Approver`: base class recording every request in `self.requests`. Default `_decide` returns false and `_choose` returns `None`. `choose` also nulls any out-of-range index.
 - `TerminalApprover`: prompts with `input`. Only the exact answer `y` approves. End-of-input counts as no.
+- `WebApprover`: for a web page. `_wait` publishes the open request in `self.pending` and blocks the agent's thread on a `threading.Event` for up to `timeout` seconds (default 300). The page calls `answer(value)`, which ignores a call when nothing is pending. No answer in time counts as no (approval) or `None` (question). `_choose` rejects a `bool` so `True` is never read as index 1.
 - `RuleApprover`: a function-driven owner for tests and evals.
 
 ### 4.5 Brain: `agent/brain.py`
@@ -178,18 +183,40 @@ Shared helpers in `store_ops.py`: `payments`, `payment`, `order_full` (the trust
 
 ### 4.7 Trace: `agent/loop.py` and `agent/trace_html.py`
 
-- `_record` appends `{step, action, observation, t}` to `result.events` and prints the step.
+- `_record` appends `{step, action, observation, cost, t}` to `result.events`, prints the step through `_log_step`, prints a `cost` line, and calls `self.on_event(event)` if the `Agent` was given one.
+- `cost` is `{think_s, act_s, input_tokens, output_tokens, data_bytes}`. `think_s` and the token counts are measured around `brain.next_action` in `run`; `act_s` is measured around `execute`, so it includes time spent waiting for the owner; `data_bytes` is the UTF-8 size of the observation as JSON. Nothing measures memory or disk use.
 - `RunResult.receipt` is every event whose observation has `evidence`.
-- `_save_trace` writes the JSON trace and calls `trace_html.render`, which escapes all values with `html.escape` and produces a single self-contained page: timeline, receipt table, owner involvement, summary.
+- `_save_trace` writes the JSON trace and calls `trace_html.render`, which escapes all values with `html.escape` and produces a single self-contained page: stat tiles, timeline (each step card shows its cost chips via `_cost_chips`), a per-step cost table with think/act bars and totals (`_cost_table`, omitted when no event has a cost), receipt table, owner involvement, summary. The page has one fixed dark colour scheme defined in `STYLE`; it no longer follows the viewer's light or dark preference.
 
 ### 4.8 Evals and tests
 
 - `evals/scenarios.py`: the `Scenario` dataclass, 12 scenarios in `SCENARIOS`, and `grade`.
-- `evals/harness.py:run_scenario`: setup → server → agent → grade. `passed` requires no problems **and** `result.finished`.
+- `evals/harness.py:run_scenario`: setup → server → agent → grade. `passed` requires no problems **and** `result.finished`. It forwards an optional `on_event` callback to the `Agent`.
 - `evals/run_evals.py`: runs each scenario N times with one shared `GeminiBrain`, writes `evals/results/results.json` and `report.md`. A crash is recorded as a failed run; `BrainUnavailable` stops the suite early.
-- `tests/test_agent.py`: 36 tests (22 functions; two are parametrized over 12 scenarios and 4 core files). None calls a model.
+- `tests/test_agent.py`: 40 tests (24 functions; three are parametrized: over 12 scenarios, 4 core files, and 3 shapes of `finish` args). None calls a model. `test_web_approver_waits_for_the_page_and_defaults_to_no` covers `WebApprover`. No test covers `streamlit_app.py` or the per-step `cost` values.
 - `run.py`: single-scenario CLI with `--goal` and `--show-browser`.
 - `dotenv_lite.py`: `load_env` (uses `setdefault`, so real environment variables win) and `utf8_console`.
+
+### 4.9 Web demo: `streamlit_app.py`
+
+**Responsibility.** The same single-scenario demo as `run.py`, as a Streamlit page: pick a scenario or type a goal, watch the trace, answer approvals with buttons, see the grade and the HTML trace.
+
+- `load_settings`: calls `load_env`, then copies `GEMINI_*` and `DEMO_RUNS_PER_DAY` from `st.secrets` into `os.environ` with `setdefault`. A missing secrets file is ignored.
+- `shared` (`st.cache_resource`): one dict per server process holding today's shared-key run count, a lock, and a `Semaphore(2)` that caps concurrent runs.
+- `install_browser` (`st.cache_resource`): runs `python -m playwright install chromium` once per process and returns the error text if it fails. `packages.txt` (`chromium`) is there so the host installs the system libraries Chromium needs.
+- `LiveRun`: starts a daemon thread that calls `run_scenario` in a temp directory with a `WebApprover`. It collects log lines in `lines`, step events in `events`, and on completion the result, the trace HTML (read into memory before the temp dir is removed) or an error string. Any exception is caught and shown; `BrainUnavailable` gets its own message.
+- `start`: chooses the key. A key typed in the sidebar is used for that run only. Otherwise the server's `GEMINI_API_KEY` is used while `demo_runs_left()` is above zero (`DEMO_RUNS_PER_DAY`, default 10). Refuses to start when both run slots are taken.
+- `show_run` and `show_costs`: two `st.fragment`s that rerun every second while the run is live. `show_run` draws the pending question (`show_question`), the log, the grade, metrics, a download button and the trace in `st.iframe`. `show_costs` draws the sidebar "Run cost" panel from `run.events`: totals plus one row per step with a think/act bar. When the run ends, `show_run` triggers one full rerun so the timers stop.
+- `answer`: the button callback. It ignores a click unless the request is still the pending one, and for a pick-one question reads the radio's value from `st.session_state` at click time.
+- Look: `.streamlit/config.toml` sets the theme (`#2a2a2a` background, `#f9f5ed` text, `#5e83ae` accent, `#222222` secondary background); `STYLE` in `streamlit_app.py` adds the rest.
+
+**Weak points.**
+- The shared-run counter and the concurrency cap live in process memory. A restart resets the daily count, and they would not hold across more than one server process.
+- A visitor who leaves during an approval keeps a run slot until the 300 s timeout expires.
+- There is no stop button, no login, and no rate limit per visitor beyond the daily shared-key cap.
+- `LiveRun.lines` and `events` are plain lists appended by one thread and read by another. That is safe for `append` in CPython but nothing enforces it.
+- Model-switch and retry messages from `GeminiBrain` go to stderr, so the page shows nothing while the brain backs off.
+- Verified only locally with a scripted brain. A run with a real Gemini key through the page, and the app on Streamlit Community Cloud (in particular the Chromium install), are `[VERIFY]`.
 
 ---
 
@@ -200,7 +227,7 @@ Where the reason is written in the README or a code comment, that is noted. Wher
 | # | Decision | Rejected alternative | Trade-off |
 |---|---|---|---|
 | 1 | **Python, synchronous, single process.** | Async, or a JS/TS stack. | Simple to read and debug; Playwright's sync API and `requests` fit a strictly sequential loop. Cost: one blocking model call per step, no parallel reads. (Inferred.) |
-| 2 | **Hand-written loop in about 350 lines, no agent framework.** | LangChain/LangGraph or the SDK's built-in agent loop. | Every control decision is visible and testable, and guard/verify sit exactly where intended. Cost: no built-in memory, planning or streaming; all of that would have to be written. (Inferred.) |
+| 2 | **Hand-written loop in about 380 lines, no agent framework.** | LangChain/LangGraph or the SDK's built-in agent loop. | Every control decision is visible and testable, and guard/verify sit exactly where intended. Cost: no built-in memory, planning or streaming; all of that would have to be written. (Inferred.) |
 | 3 | **One JSON action per step parsed by `parse_action`, not native function calling.** | Gemini function calling. | Stated in README: works on any model, easy to log and replay, brain stays swappable, and `ScriptedBrain` becomes trivial. Cost: no schema enforcement by the API, so a malformed reply costs a step; no parallel tool calls. |
 | 4 | **Rules are Python attached to each tool, with default deny in `policy.check`.** | Put the rules in the prompt, or use a second LLM as judge. | Deterministic, cannot be argued with, and unit-testable. Cost: each new write tool needs a hand-written rule, and rule quality is only as good as the author's foresight. |
 | 5 | **Rules read trusted data themselves** (`order_full`, `read_csv`, `owner_decisions`) and ignore the model's stated reasoning. | Validate the model's arguments only. | The model cannot assert its way past a rule. Cost: extra store reads on every write, and the rule needs its own trusted route to data (see the tension in section 11.3). |
@@ -217,6 +244,9 @@ Where the reason is written in the README or a code comment, that is noted. Wher
 | 16 | **Model fallback chain on quota or overload.** | Fail the run. | Runs keep going on a free key. Cost: a run or an eval suite can silently mix models (section 9). |
 | 17 | **Grading on final store state, including what must not happen.** | Grade the transcript or the summary. | Objective and model-independent. Cost: it cannot see reasoning quality or a misleading summary. |
 | 18 | **Budgets and stuck detection in the loop** (30 steps, 20 writes, 400k tokens, 3 identical failures). | Rely on the model to stop. | Bounded cost and blast radius. Cost: the limits are arbitrary constants, not tuned. |
+| 19 | **Web demo runs the agent in a background thread and the page polls it once a second.** | Run the agent inside the Streamlit script, or build a separate frontend with websockets. | The blocking loop and Playwright's sync API stay unchanged, and an approval can pause the agent while the page stays responsive. Cost: state shared across threads by convention, up to a second of lag, and a slot held by an abandoned run. (Inferred.) |
+| 20 | **Visitors bring their own Gemini key; the server's key is an optional fallback with a daily cap.** | Server key only, or visitor key only. | A public URL cannot drain the free quota, and the demo still works for someone with no key. Cost: the cap is an in-memory counter (section 4.9). |
+| 21 | **Per-step cost is measured in the core loop and handed out through `on_event`.** | Parse it from log lines, or measure it in the UI. | One source of truth feeds the terminal, the JSON and HTML traces and the web sidebar, and the loop stays unaware of any UI. Cost: `act_s` mixes tool time with owner wait time. (Inferred.) |
 
 ---
 
@@ -246,9 +276,11 @@ A `PolicyDenied` becomes an observation with the reason text, which the model re
 
 ### 6.3 Human approval for refunds and emails
 
-`issue_refund` and `send_email` have `risk=IRREVERSIBLE`. After their rule passes, `execute` calls `self.approver.ask(tool_name, args, thought)`. A false return produces `denied_by_owner` with the text "The owner said no. Don't ask again." and the tool never runs. `TerminalApprover._decide` shows the tool, every arg and the model's stated reason. Every request is recorded in `approver.requests` and appears in the receipt and the HTML trace.
+`issue_refund` and `send_email` have `risk=IRREVERSIBLE`. After their rule passes, `execute` calls `self.approver.ask(tool_name, args, thought)`. A false return produces `denied_by_owner` with the text "The owner said no. Don't ask again." and the tool never runs. `TerminalApprover._decide` shows the tool, every arg and the model's stated reason; on the web page `streamlit_app.py:show_question` shows the same three things with Approve and Decline buttons, backed by `WebApprover`. Every request is recorded in `approver.requests` and appears in the receipt and the HTML trace.
 
-Not implemented: approval timeouts (the terminal prompt blocks indefinitely), any channel other than the terminal, multiple approvers, an audit log beyond the trace file, and any code that stops the model from asking again after a "no" (that is prompt-only; a repeat would simply prompt the owner again).
+Timeouts: `WebApprover` treats no answer within 300 s as no. The terminal prompt still blocks indefinitely.
+
+Not implemented: any channel other than the terminal and the demo web page (no Slack, email or push), authentication of whoever clicks Approve on the page, multiple approvers, an audit log beyond the trace file, and any code that stops the model from asking again after a "no" (that is prompt-only; a repeat would simply prompt the owner again).
 
 ### 6.4 Prompt injection from data
 
@@ -270,12 +302,12 @@ Limits you should state before being asked:
 
 Code path, in `loop.py:execute`:
 
-1. `before = tool.snapshot(ws, args)` (line 151), taken after the rule and approval and before the write.
-2. `output = tool.run(ws, args)` (line 154).
+1. `before = tool.snapshot(ws, args)` (line 166), taken after the rule and approval and before the write.
+2. `output = tool.run(ws, args)` (line 169).
 3. If the tool has no `verify`, the raw output is returned. Otherwise:
-4. `after = tool.snapshot(ws, args)` (line 178).
-5. `ok, detail = tool.verify(args, before, after)` (line 179).
-6. If not ok and `tool.retry_safe`: run once more, snapshot, verify again (lines 181–188).
+4. `after = tool.snapshot(ws, args)` (line 193).
+5. `ok, detail = tool.verify(args, before, after)` (line 194).
+6. If not ok and `tool.retry_safe`: run once more, snapshot, verify again (lines 196–203).
 7. The observation gets `status` (`ok` or `verification_failed`), `verified`, `check`, `auto_retried` and `evidence: {before, after}`.
 
 What each verifier checks:
@@ -294,8 +326,8 @@ Proof it works: `test_verification_catches_silent_failure` runs `flaky_write` an
 Honest limits:
 
 - **It is not an independent path.** The README says "a separate read path". In code, the snapshot is a different HTTP request (a GET rather than the POST's response) through the same `StoreClient` to the same server and database. It catches "the write said ok but did nothing". It would not catch a store whose reads are wrong.
-- **A lost detail.** If the retry in step 6 raises `StoreError`, the text is appended to `detail` on line 186 and then overwritten by the second `verify` call on line 188. The "retry failed" reason never reaches the observation.
-- **Snapshots can crash the run.** The after-snapshot calls on lines 178 and 187 are outside any `try`. A `StoreError` there (after the client's three GET attempts) propagates out of `run`. The trace is still saved by the `finally` block.
+- **A lost detail.** If the retry in step 6 raises `StoreError`, the text is appended to `detail` on line 201 and then overwritten by the second `verify` call on line 203. The "retry failed" reason never reaches the observation.
+- **Snapshots can crash the run.** The after-snapshot calls on lines 193 and 202 are outside any `try`. A `StoreError` there (after the client's three GET attempts) propagates out of `run`. The trace is still saved by the `finally` block.
 - **No verification on the error path.** If `tool.run` raises (for example a refund POST that times out), `execute` returns `error` without taking an after-snapshot, so a refund that succeeded server-side but timed out client-side is reported only as an error. A repeat attempt would then be blocked by `_rule_refund` ("already refunded") and by the unique constraint.
 - **`verification_failed` does not stop the run.** It is an observation; the model can still call `finish`, and the run is reported as finished. The receipt marks the change `[NOT verified]`.
 - **Task-level verification is not implemented.** Nothing in the agent checks the final state against the goal. Only the eval grader does, and only for the built-in scenarios.
@@ -310,12 +342,13 @@ Honest limits:
 | Model quota | Message contains `PerDay` → switch to the next fallback model immediately; if none left, raise `BrainUnavailable`. | same |
 | Model overload | A 503 on the second or later attempt, with a fallback available → switch model without waiting. | same |
 | Store reads | 3 attempts, sleeps 0.4 s and 0.8 s, 5 s timeout, on 5xx or connection error only. | `store_client.py:_call` |
-| Store writes | No retry in the client. `execute` retries once after 0.3 s if the error is transient **and** the tool is `retry_safe`. | `loop.py:execute` (lines 153–160) |
-| Fake success | Caught by verification, then one re-run for `retry_safe` tools. | `loop.py:execute` (lines 177–188) |
+| Store writes | No retry in the client. `execute` retries once after 0.3 s if the error is transient **and** the tool is `retry_safe`. | `loop.py:execute` (lines 168–175) |
+| Fake success | Caught by verification, then one re-run for `retry_safe` tools. | `loop.py:execute` (lines 192–203) |
 | Browser | 3 attempts, 8 s navigation timeout, 5 s wait for the late data, 0.5 s × attempt backoff, no retry on 404. | `browser.py:read_admin_order` |
 | Bad model output | `parse_action` strips code fences, extracts the outermost `{...}`, unwraps a one-element list. If it still fails, the model is told why and a step is spent. | `loop.py:parse_action`, `run` |
 | Runaway runs | Step limit 30, write budget 20, token budget 400,000, three identical failing actions. | `loop.py:run`, `execute` |
-| No human present | `Approver` defaults to no; `TerminalApprover` treats end-of-input as no. | `policy.py` |
+| No human present | `Approver` defaults to no; `TerminalApprover` treats end-of-input as no; `WebApprover` treats 300 s without an answer as no. | `policy.py` |
+| Web demo overload | At most 2 runs at once; shared-key runs capped per day; any exception in the run thread is shown on the page instead of killing it. | `streamlit_app.py:start`, `LiveRun._work` |
 
 Behaviour per failure mode:
 
@@ -342,7 +375,7 @@ Known reliability defects:
 
 ### 9.1 What exists
 
-- **Offline suite:** 36 pytest tests, all passing on Python 3.13.5 on Windows (about 35 s). These use `ScriptedBrain`. They prove the scenarios are solvable, the grader accepts a correct solution, and the store, browser, guardrails, approvals, verification and loop limits behave. They say nothing about model behaviour.
+- **Offline suite:** 40 pytest tests, all passing on Python 3.13.5 on Windows (about 30–35 s). These use `ScriptedBrain`. They prove the scenarios are solvable, the grader accepts a correct solution, and the store, browser, guardrails, approvals, verification and loop limits behave. They say nothing about model behaviour.
 - **Live suite:** `python -m evals.run_evals`. The committed `evals/results/report.md` is from **one run per scenario on `gemini-3.1-flash-lite`** (2026-10-06): **11 of 12 passed**.
 
 State this precisely in an interview: with one run per scenario this is a smoke test, not a reliability measurement. The README's default of three runs per scenario has not been completed. The default model `gemini-3.8-flash` has not been run across the suite, because its free tier allowed 20 requests per day and a scenario uses roughly 5–10. Its results are `[VERIFY]`.
@@ -430,7 +463,9 @@ Environment issue, not a code bug: the first `python -m venv` failed partway thr
 - Parallel or batched tool calls.
 - Any real integration (Razorpay, a real admin panel, real email).
 - Authentication anywhere, including on `/api/internal`.
-- Approvals outside the terminal, approval timeouts, an audit log.
+- Approvals outside the terminal and the demo web page, a timeout on the terminal prompt, an audit log.
+- For the web demo: login, per-visitor rate limiting, a stop button, persistence of the shared-run counter, and any automated test of the page.
+- Measurement of memory or disk use per step. The per-step `cost` covers time, tokens and observation size only.
 - A second model provider. `Brain` is an interface, but only Gemini is implemented.
 - A response schema for the model's JSON.
 - CI, a lockfile (`requirements.txt` has lower bounds only), type checking, linting, packaging, containers.
@@ -446,6 +481,7 @@ The agent must use the browser because `submitted_utr` is "only on the dashboard
 - `README.md` says the suite is "run several times over"; the committed result is one run per scenario, and the results placeholder in the README is still an unfilled HTML comment.
 - `evals/scenarios.py`'s docstring opens with "10 small, messy store situations" and then lists 12.
 - `HOW_IT_WORKS.md` Part 6 says the project was never run against Gemini.
+- `HOW_IT_WORKS.md` predates the web demo, `WebApprover` and per-step cost tracking, and mentions none of them.
 
 ### 11.5 What to build next, in order
 
@@ -456,7 +492,7 @@ The agent must use the browser because `submitted_utr` is "only on the dashboard
 5. Tighten the grader: check flags and stock in every scenario and penalise wrong approval requests.
 6. Label every outsider-controlled field as untrusted, not only the note.
 7. Add a JSON response schema, a second `Brain` implementation, a lockfile and CI.
-8. Then real integrations and an out-of-terminal approval channel with a timeout that defaults to no.
+8. Then real integrations and a production approval channel (Slack or email, with authentication and an audit log). The web page's `WebApprover` already has the timeout that defaults to no.
 
 ---
 
@@ -475,9 +511,12 @@ Versions are what is installed in the project's `.venv`. `requirements.txt` pins
 | Playwright | 1.63.0 | 1.44 | `Browser` |
 | Chromium headless shell | 153.0.8010.12 (Playwright build 1243) | n/a | admin page reads |
 | pytest | 9.1.1 | 8.0 | offline tests |
+| Streamlit | 1.65.0 | 1.37 | web demo (`streamlit_app.py`); `st.fragment` needs 1.37, `st.iframe` is used when present |
 | SQLite | Python standard library | n/a | store database |
 
-Models: default `gemini-3.8-flash`; fallbacks `gemini-3.5-flash`, then `gemini-3.1-flash-lite`. The committed eval used `gemini-3.1-flash-lite`. The only external service is the Gemini API. Configuration is four environment variables read from `.env`: `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS`, `GEMINI_MIN_SECONDS_BETWEEN_CALLS`.
+Models: default `gemini-3.8-flash`; fallbacks `gemini-3.5-flash`, then `gemini-3.1-flash-lite`. The committed eval used `gemini-3.1-flash-lite`. The only external service is the Gemini API. Configuration is four environment variables read from `.env`: `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS`, `GEMINI_MIN_SECONDS_BETWEEN_CALLS`. The web demo adds a fifth, `DEMO_RUNS_PER_DAY`, and also reads all five from Streamlit secrets.
+
+Deployment files for the web demo: `packages.txt` (system package `chromium`, for its shared libraries) and `.streamlit/config.toml` (theme). The intended host is Streamlit Community Cloud with `streamlit_app.py` as the main file; whether it is deployed and working there is `[VERIFY]`.
 
 ---
 
@@ -487,20 +526,24 @@ Models: default `gemini-3.8-flash`; fallbacks `gemini-3.5-flash`, then `gemini-3
 
 | Question | Where to point |
 |---|---|
-| Walk me through one step. | `loop.py:run` lines 205–243, then `execute` top to bottom. |
-| What does the model actually see? | `SYSTEM_PROMPT`, `Registry.describe`, `Registry.guidance`, and the JSON observation appended at `run` lines 234–235. |
+| Walk me through one step. | `loop.py:run` lines 220–265, then `execute` top to bottom. |
+| What does the model actually see? | `SYSTEM_PROMPT`, `Registry.describe`, `Registry.guidance`, and the JSON observation appended at `run` lines 256–257. |
 | Why did the agent do X at step N? | Open `runs/run_*.html`; each step is built by `trace_html.py:_step` from `result.events`. |
 | What stops a wrong refund? | `store_ops.py:_rule_refund`, then `policy.py:needs_approval` and `Approver.ask`, then `refunds.payment_id UNIQUE` in `store/db.py`. |
 | How is the customer note handled? | `store_ops.py:_browser_read_order`; then `_rule_mark_paid` and `_rule_refund`; `test_guardrail_blocks_injected_instruction`. |
-| How do you know a write worked? | `execute` lines 177–191 and the `_snap_*` / `_verify_*` pairs in `store_ops.py`. |
-| What happens if the model returns garbage? | `loop.py:parse_action` and the `except` branch at `run` lines 218–223. |
+| How do you know a write worked? | `execute` lines 192–206 and the `_snap_*` / `_verify_*` pairs in `store_ops.py`. |
+| What happens if the model returns garbage? | `loop.py:parse_action` and the `except` branch at `run` lines 238–243. |
+| How much did step N cost? | The `cost` dict on each event: built in `loop.py:run` (lines 222–228, 252–254) and finished in `_record`. Shown by `trace_html.py:_cost_chips` and `_cost_table`, and live by `streamlit_app.py:show_costs`. |
+| How does the web page pause the agent for an approval? | `policy.py:WebApprover._wait` blocks the agent's thread on an event; `streamlit_app.py:show_question` renders `approver.pending` and its buttons call `answer`. |
 | How does it decide to ask a human? | It does not decide in code. The model chooses the tool; `_rule_ask_which_order` only validates the question. |
 
 ### Debug
 
 | Question | Where to look |
 |---|---|
-| The run hangs between steps. | `brain.py:next_action` backoff; stderr shows the retry lines. |
+| The run hangs between steps. | `brain.py:next_action` backoff; stderr shows the retry lines. On the web page those lines are not shown, so check the server log. |
+| The web page says two runs are in progress. | The `Semaphore(2)` in `streamlit_app.py:shared`; an abandoned approval holds a slot for up to 300 s. |
+| The web run fails on a browser step after deploy. | `streamlit_app.py:install_browser` (its error is shown as a warning at the top of the page) and `packages.txt`. |
 | It says "verification_failed". | The tool's `_verify_*` and the `evidence` in the trace JSON. |
 | The agent is denied on a payment that looks right. | `mismatch_reason` and `read_csv`'s integer coercion. |
 | An eval scenario fails. | The `problems` list from `scenarios.py:grade`, then the trace file named in the report. |
@@ -516,12 +559,13 @@ Models: default `gemini-3.8-flash`; fallbacks `gemini-3.5-flash`, then `gemini-3
 | Add partial refunds. | `_rule_refund` already allows 0 < amount ≤ payment; `_verify_refund` and the unique constraint assume one refund per payment, so `store/db.py` and the verifier would need to change. |
 | Add a new scenario. | Append a `Scenario` to `SCENARIOS` in `evals/scenarios.py` and a reference solution to `REFERENCE` in the tests. |
 | Swap the model provider. | Subclass `Brain` in `brain.py` and implement `next_action`; nothing else changes. |
-| Approvals over Slack. | Subclass `Approver` in `policy.py` and implement `_decide` and `_choose`. |
-| Make approvals time out. | `TerminalApprover._input`; default must stay "no". |
+| Approvals over Slack. | Subclass `Approver` in `policy.py` and implement `_decide` and `_choose`. `WebApprover` is the model for a channel that answers later. |
+| Make approvals time out. | Already done for the web page (`WebApprover.timeout`). For the terminal: `TerminalApprover._input`; default must stay "no". |
 | Force a question on ambiguity. | A check before accepting `finish` in `loop.py:run`. This needs a pack-provided hook, since the core must not know about payments (`test_core_is_domain_agnostic`). |
 | Add a new fault. | A key in the `faults` dict consumed in `store/app.py`, set through `Scenario.faults`. |
 | Batch independent reads. | `parse_action` and `run` assume one action per reply; both would change, along with the prompt. |
-| Cut token use. | `messages` in `run` is never trimmed; summarise or drop old observations there. |
+| Cut token use. | `messages` in `run` is never trimmed; summarise or drop old observations there. The per-step `input_tokens` in the trace shows the growth. |
+| Separate owner wait from tool time. | `act_s` is timed around the whole of `execute` in `loop.py:run`; time `approver.ask` inside `execute` and report it on its own. |
 
 ---
 
@@ -534,6 +578,6 @@ Models: default `gemini-3.8-flash`; fallbacks `gemini-3.5-flash`, then `gemini-3
 | Reliability | okay | Retries, backoff, budgets and stuck detection exist (`store_client._call`, `brain.next_action`, `loop.run`), but the measured evidence is one run per scenario on a lite model and several unhandled-exception paths remain. |
 | Verification | strong | Every write tool has a snapshot/verify pair run by `execute`, with a test that catches a fake success (`test_verification_catches_silent_failure`). Caveat: the re-read uses the same API, and there is no goal-level check. |
 | Generalization | okay | Core/pack split enforced by `test_core_is_domain_agnostic`, a second job in one file (`returns.py`), and a non-store pack in a test. But every live result is on the same fake store, and the non-store job was only run with a scripted brain. |
-| Engineering quality | okay | Small, readable, 36 passing tests, default-deny validation. Against that: no lockfile, CI or type checks; string-matched error handling; rules that crash on malformed CSVs; documentation that overstates two things. |
-| Product thinking | strong | Human involvement is designed, not bolted on: approval only for irreversible actions, a question tool that refuses needless questions (`_rule_ask_which_order`), a grader that fails over-asking, and a receipt with before/after evidence. Limited to a terminal. |
+| Engineering quality | okay | Small, readable, 40 passing tests, default-deny validation. Against that: no lockfile, CI or type checks; string-matched error handling; rules that crash on malformed CSVs; documentation that overstates two things. |
+| Product thinking | strong | Human involvement is designed, not bolted on: approval only for irreversible actions, a question tool that refuses needless questions (`_rule_ask_which_order`), a grader that fails over-asking, and a receipt with before/after evidence. Available in a terminal and on a demo web page with on-page approvals and a live per-step cost panel; the page has no login and is not yet confirmed deployed. |
 | Technical understanding | depends on you | The code gives you real material (conditional updates and unique constraints in `store/`, trusted-read rules, verify-after-write, the Windows file-lock and encoding bugs). The rating is earned by explaining the weaknesses in sections 7, 8 and 11 unprompted. |

@@ -426,7 +426,7 @@ Other live runs outside the committed report (single runs, each graded PASS by `
 
 ## 10. Bugs hit when first run live
 
-All of these appeared the first time the project was run end to end on Windows with a real key (2026-10-06), and all are fixed in the committed code. `HOW_IT_WORKS.md` Part 6 states the code had not been run against Gemini before that; that note is now out of date.
+All of these appeared the first time the project was run end to end on Windows with a real key (2026-10-06), and all are fixed in the committed code. `HOW_IT_WORKS.md` Part 6 now says so as well.
 
 | # | Situation | Root cause | Fix | File |
 |---|---|---|---|---|
@@ -480,8 +480,6 @@ The agent must use the browser because `submitted_utr` is "only on the dashboard
 - `README.md` says verification uses "a separate read path" (see section 7).
 - `README.md` says the suite is "run several times over"; the committed result is one run per scenario, and the results placeholder in the README is still an unfilled HTML comment.
 - `evals/scenarios.py`'s docstring opens with "10 small, messy store situations" and then lists 12.
-- `HOW_IT_WORKS.md` Part 6 says the project was never run against Gemini.
-- `HOW_IT_WORKS.md` predates the web demo, `WebApprover` and per-step cost tracking, and mentions none of them.
 
 ### 11.5 What to build next, in order
 

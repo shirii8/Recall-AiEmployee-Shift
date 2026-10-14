@@ -16,7 +16,7 @@ This file is generic: it knows nothing about stores, orders or payments.
 Those live in agent/packs/.
 """
 import json
-import re
+import re  # searches text using patterns, used to extract JSON from the AI's reply.
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,6 +26,8 @@ from agent.browser import BrowserError
 from agent.policy import Approver, PolicyDenied, check, needs_approval, validate_args
 from agent.store_client import StoreError
 from agent.tools import ASK_HUMAN, CHANGES_THINGS, Registry, Workspace
+
+# tools placeholder gets replaced with the available tools and their descriptions.
 
 SYSTEM_PROMPT = """You are Shift, a careful AI operations employee for a small business.
 You get a goal from the owner and complete it using tools, one step at a time.
@@ -66,7 +68,9 @@ class RunResult:
     summary: str = ""
     steps: int = 0
     writes: int = 0
-    events: list = field(default_factory=list)
+    events: list = field(
+        default_factory=list
+    )  # It creates a new empty list for each RunResult object.
     seconds: float = 0.0
     usage: dict = field(default_factory=dict)
     trace_path: str = ""
@@ -80,9 +84,19 @@ class RunResult:
 def parse_action(raw: str) -> dict:
     """Pull the JSON action out of the model's reply. Tolerates ```json fences around it."""
     text = raw.strip()
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    fenced = re.search(
+        r"```(?:json)?\s*(.*?)```", text, re.S
+        #         ``` → opening backticks.
+        # (?:json)? → optionally matches the word json.
+        # \s* → skips whitespace.
+        # (.*?) → captures the content inside the code block.
+        # ``` → closing backticks.
+        # re.S → lets . match newline characters too.
+    )  # If the AI wraps its JSON in a code block, this extracts the content inside the first pair of triple-backtick markers.
     if fenced:
-        text = fenced.group(1).strip()
+        text = fenced.group(
+            1
+        ).strip()  # group(1) extracts the text captured by the first capturing group (...) in the regex.
     if not text.startswith("{"):
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end <= start:

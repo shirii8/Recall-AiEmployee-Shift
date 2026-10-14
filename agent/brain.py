@@ -48,18 +48,27 @@ class GeminiBrain(Brain):
         # Free-tier keys allow only a few requests per minute, so we can space calls out.
         self.gap = float(min_seconds_between_calls if min_seconds_between_calls is not None
                          else os.environ.get("GEMINI_MIN_SECONDS_BETWEEN_CALLS", "0"))
-        self._last_call = 0.0
+        self._last_call = (
+            0.0  # records the initial timestamp placeholder, before any API call.
+        )
 
     def next_action(self, system: str, messages: list[dict]) -> str:
-        from google.genai import types
+        from google.genai import (
+            types,
+        )  # provides classes to format the conversation and configure Gemini's response.
 
-        contents = [types.Content(role=m["role"], parts=[types.Part(text=m["text"])]) for m in messages]
+        contents = [
+            types.Content(role=m["role"], parts=[types.Part(text=m["text"])])
+            for m in messages
+        ]  # types.Part(text=...) wraps the text in Gemini's required format. types.Content(...) combines the role and text into a Gemini message.
         config = types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0,                          # as repeatable as possible
+            system_instruction=system,  # tells it how the agent should behave.
+            temperature=0,  # Makes responses more predictable and less random. It doesn't guarantee identical responses every time.
             response_mime_type="application/json",  # ask Gemini for JSON only
             # We parse the JSON action ourselves, so the SDK's own tool-calling stays off.
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True
+            ),
         )
         for attempt in range(5):
             wait = self.gap - (time.time() - self._last_call)
@@ -83,7 +92,7 @@ class GeminiBrain(Brain):
                             f"Wait for it to reset, or set GEMINI_MODEL in .env to another model.") from e
                     spent, self.model = self.model, self.fallbacks.pop(0)
                     print(f"  daily quota for {spent} is used up; switching to {self.model}", file=sys.stderr)
-                    continue
+                    continue  # Prints a message to the error stream and starts the next loop attempt using the new model.
                 offline = any(word in type(e).__name__ for word in ("Connect", "Timeout"))
                 transient = offline or any(
                     code in msg for code in ("429", "500", "503", "RESOURCE_EXHAUSTED", "UNAVAILABLE"))

@@ -18,8 +18,8 @@ import threading  # separate flows of execution within a program.
 
 from agent.tools import IRREVERSIBLE, READ, Tool, Workspace
 
-#Exception is Python's built-in class for errors.
-#PolicyDenied is a specific type of error used when an action violates a safety rule.
+# Exception is Python's built-in class for errors.
+# PolicyDenied is a specific type of error used when an action violates a safety rule.
 class PolicyDenied(Exception):
     pass
 
@@ -62,6 +62,8 @@ def needs_approval(tool: Tool) -> bool:
 
 # ------------------------------------------------------------------ approvers
 
+
+# class is designed to be overridden by a subclass that implements the actual interaction.
 class Approver:
     """The human owner. Subclasses decide HOW we ask. Every question is recorded."""
 
@@ -113,6 +115,7 @@ class TerminalApprover(Approver):
     def _choose(self, question, options) -> int | None:
         print("\n" + "=" * 64)
         print(f"  THE AGENT IS UNSURE AND NEEDS YOU\n  {question}")
+        # enumerate(options, 1) numbers the options starting from 1, not 0.
         for i, o in enumerate(options, 1):
             print(f"     {i}. {o}")
         print("     0. none of these")
@@ -129,10 +132,12 @@ class WebApprover(Approver):
     """
 
     def __init__(self, timeout: float = 300):
-        super().__init__()
+        super().__init__()  #initialises self.requests = []
         self.timeout = timeout
-        self.pending: dict | None = None
-        self._answered = threading.Event()
+        self.pending: dict | None = None #pending will hold the question currently waiting for the owner's response
+        self._answered = (
+            threading.Event()
+        )  # Initially, the signal is OFF. Later, when the owner answers, it can be switched ON using .set().
         self._answer = None
 
     def answer(self, value) -> None:
@@ -141,14 +146,14 @@ class WebApprover(Approver):
             return
         self.pending = None
         self._answer = value
-        self._answered.set()
+        self._answered.set() #Switch the signal ON! This wakes up the agent's thread, which was waiting for the answer.
 
     def _wait(self, request: dict):
         self._answer = None
-        self._answered.clear()
-        self.pending = request
-        try:
-            return self._answer if self._answered.wait(self.timeout) else None
+        self._answered.clear()  # witch the signal OFF, so the agent waits for a new answer, .clear() switches it OFF.
+        self.pending = request #store the q as pending 
+        try: #wait for answer till timeout
+            return self._answer if self._answered.wait(self.timeout)  else None
         finally:
             self.pending = None
 

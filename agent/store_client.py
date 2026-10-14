@@ -6,19 +6,21 @@ employee, it goes through the store's "front door" (the API).
 """
 import time
 
-import requests
-
+import requests  # Python library, send HTTP requests to APIs and servers.
 
 class StoreError(Exception):
     def __init__(self, message: str, status_code: int | None = None):
-        super().__init__(message)
+        super().__init__(
+            message
+        )  # gives the error message to Python's built-in Exception class.
         self.status_code = status_code   # None = couldn't reach the store at all
 
-    @property
+    @property  # lets you access a method like an attribute. no () req while accessing methods
     def transient(self) -> bool:
         """Worth retrying? Yes for outages (5xx / unreachable), no for 'you asked for something invalid' (4xx)."""
         return self.status_code is None or self.status_code >= 500
-
+    
+# Send request → handle connection failure → check HTTP status → raise an error if needed → otherwise return the data.
 
 class StoreClient:
     def __init__(self, base_url: str, timeout: float = 5.0):
@@ -31,27 +33,33 @@ class StoreClient:
         attempts = 3 if method == "GET" else 1
         for attempt in range(1, attempts + 1):
             try:
-                return self._once(method, path, **kwargs)
+                return self._once(
+                    method, path, **kwargs
+                )  # _call() delegates the actual HTTP request to _once().
             except StoreError as e:
                 if not e.transient or attempt == attempts:
-                    raise
+                    raise #not worth retrying
                 time.sleep(0.2 * 2 ** attempt)
 
     def _once(self, method: str, path: str, **kwargs):
         try:
-            r = requests.request(method, self.base_url + path, timeout=self.timeout, **kwargs)
+            r = requests.request(
+                method, self.base_url + path, timeout=self.timeout, **kwargs
+            )  # **kwargs- passes extra arguments, such as JSON data for a POST request.
         except requests.RequestException as e:
             raise StoreError(f"store unreachable: {e}") from e
         if r.status_code >= 400:
             try:
-                detail = r.json().get("detail", r.text)
-            except ValueError:
+                detail = r.json().get(
+                    "detail", r.text
+                )  # uses the "detail" field if present; otherwise, it uses the raw response text.
+            except ValueError:  # handles cases where the response isn't valid JSON.
                 detail = r.text
             raise StoreError(f"{r.status_code}: {detail}", r.status_code)
         return r.json()
 
     # reads
-    def list_orders(self, status=None):
+    def list_orders(self, status=None): 
         return self._call("GET", "/api/orders", params={"status": status} if status else None)
 
     def get_order(self, order_id: int):
